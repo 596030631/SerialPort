@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"github.com/tarm/goserial"
+	"io"
 	"time"
 )
 
@@ -27,48 +29,111 @@ var (
 	VMC_POLL_SUCCESS    = "760076"
 	VMC_POLL_OUTGOOG    = "7603"
 	VMC_OUT_GOOD_REFUSE = "76158b"
+
+	heads = []byte{0x76, 0x79, 0x7D, 0x7C}
 )
 
 func main() {
 
-	// 接收线程为主
-	chReader := make(chan string)
-	go Reader(chReader)
+	/* 打开串口 */
+	ch := make(chan io.ReadWriteCloser)
+	go openSerial(ch)
+	snake := <-ch
 
-	// 发送线程被动回复
-	chWriter := make(chan string)
-	go Writer(chWriter)
-
-	c := &serial.Config{Name: "COM2", Baud: 115200}
-	s, err := serial.OpenPort(c)
-	if err != nil {
-		fmt.Print(err)
-	}
+	/* 读取数据 */
+	stream := make([]byte, 0)
 
 	for true {
 
-		time.Sleep(1 * time.Second)
-		n, err := s.Write([]byte("test"))
-		if err != nil {
-			fmt.Print(err)
-		}
-
+		//chReader := make(chan []byte)
+		//Reader(chReader, snake)
 		buf := make([]byte, 128)
-		n, err = s.Read(buf)
+		_, err := snake.Read(buf[:])
 		if err != nil {
-			fmt.Print(err)
+			fmt.Println(err)
 		}
-		fmt.Printf("%q", buf[:n])
-	}
 
+		bs := buf
+		//bs := <- chReader
+
+		for _, n := range bs {
+			stream = append(stream, n)
+		}
+
+		temp := heads
+		var location []int
+
+		for i, n := range stream {
+			for _, m := range temp {
+				if n == m {
+					location = append(location, i)
+					break
+				}
+			}
+		}
+
+		// 提示  根据指令长度来判断，不能只根据开头 错误示范：
+		// 7defeefe2000000000000000000078000000000000000000000000000000000000000000000000000000000000000000000000000
+
+		num := len(location)
+		var orders [][]byte
+
+		if num > 1 {
+			for s := 1; s < num; s++ {
+				orders = append(orders, stream[location[s-1]:location[s]+1])
+			}
+			stream = stream[location[num-1]:]
+		}
+
+		for _, value := range orders {
+			fmt.Println(hex.EncodeToString(value))
+			/* 数据分支 */
+			switch value[0] {
+			case 0x76:
+				/* write */
+				if len(value) == 4 {
+					chWriter := make(chan string)
+					food := []byte{0x76, 0x00, 0x76}
+					Writer(chWriter, snake, food)
+					break
+				}
+			}
+		}
+
+		time.Sleep(200 * time.Millisecond) // 休眠
+	}
+}
+
+func openSerial(ch chan io.ReadWriteCloser) {
+	/* 打开串口 */
+	c := &serial.Config{Name: "COM3", Baud: 115200}
+	s, err := serial.OpenPort(c)
+	if err != nil {
+		fmt.Println("Open serial failed err -> ", err)
+		return
+	}
+	ch <- s
 }
 
 /* read */
-func Reader(ch chan string) {
+func Reader(ch chan []byte, reader io.ReadWriteCloser) {
+	buf := make([]byte, 128)
 
+	_, err := reader.Read(buf[:])
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	//index := bytes.IndexByte(buf, 0)
+
+	ch <- buf[:]
 }
 
 /* write */
-func Writer(ch chan string) {
-	ch <- "eeee"
+func Writer(ch chan string, writer io.ReadWriteCloser, data []byte) {
+	_, err := writer.Write(data)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(hex.EncodeToString(data))
 }
